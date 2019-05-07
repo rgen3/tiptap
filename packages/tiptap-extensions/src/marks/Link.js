@@ -1,6 +1,6 @@
-import { Mark, Plugin, TextSelection } from 'tiptap'
+import { Mark, Plugin } from 'tiptap'
 import { updateMark, removeMark, pasteRule } from 'tiptap-commands'
-import { getMarkRange } from 'tiptap-utils'
+import { getMarkAttrs } from 'tiptap-utils'
 
 export default class Link extends Mark {
 
@@ -44,7 +44,7 @@ export default class Link extends Mark {
   pasteRules({ type }) {
     return [
       pasteRule(
-        /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_+.~#?&//=]*)/g,
+        /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._+~#=]{2,256}\.[a-zA-Z]{2,}\b([-a-zA-Z0-9@:%_+.~#?&//=]*)/g,
         type,
         url => ({ href: url }),
       ),
@@ -55,19 +55,14 @@ export default class Link extends Mark {
     return [
       new Plugin({
         props: {
-          handleClick(view, pos) {
-            const { schema, doc, tr } = view.state
-            const range = getMarkRange(doc.resolve(pos), schema.marks.link)
+          handleClickOn(view, pos, node, nodePos, event) {
+            const { schema } = view.state
+            const attrs = getMarkAttrs(view.state, schema.marks.link)
 
-            if (!range) {
-              return
+            if (attrs.href && event.target instanceof HTMLAnchorElement) {
+              event.stopPropagation()
+              window.open(attrs.href)
             }
-
-            const $start = doc.resolve(range.from)
-            const $end = doc.resolve(range.to)
-            const transaction = tr.setSelection(new TextSelection($start, $end))
-
-            view.dispatch(transaction)
           },
         },
       }),

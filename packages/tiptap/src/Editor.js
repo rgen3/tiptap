@@ -1,18 +1,27 @@
-import { EditorState, Plugin, PluginKey } from 'prosemirror-state'
+import {
+  EditorState,
+  Plugin,
+  PluginKey,
+  TextSelection,
+} from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
 import { Schema, DOMParser, DOMSerializer } from 'prosemirror-model'
 import { dropCursor } from 'prosemirror-dropcursor'
 import { gapCursor } from 'prosemirror-gapcursor'
 import { keymap } from 'prosemirror-keymap'
-import { baseKeymap, selectParentNode } from 'prosemirror-commands'
+import { baseKeymap } from 'prosemirror-commands'
 import { inputRules, undoInputRule } from 'prosemirror-inputrules'
 import { markIsActive, nodeIsActive, getMarkAttrs } from 'tiptap-utils'
-import { ExtensionManager, ComponentView } from './Utils'
+import {
+ camelCase, Emitter, ExtensionManager, ComponentView,
+} from './Utils'
 import { Doc, Paragraph, Text } from './Nodes'
 
-export default class Editor {
+export default class Editor extends Emitter {
 
   constructor(options = {}) {
+    super()
+
     this.defaultOptions = {
       editorProps: {},
       editable: true,
@@ -27,6 +36,7 @@ export default class Editor {
       },
       useBuiltInExtensions: true,
       dropCursor: {},
+      parseOptions: {},
       onInit: () => {},
       onUpdate: () => {},
       onFocus: () => {},
@@ -34,6 +44,15 @@ export default class Editor {
       onPaste: () => {},
       onDrop: () => {},
     }
+
+    this.events = [
+      'init',
+      'update',
+      'focus',
+      'blur',
+      'paste',
+      'drop',
+    ]
 
     this.init(options)
   }
@@ -52,7 +71,6 @@ export default class Editor {
     this.keymaps = this.createKeymaps()
     this.inputRules = this.createInputRules()
     this.pasteRules = this.createPasteRules()
-    this.state = this.createState()
     this.view = this.createView()
     this.commands = this.createCommands()
     this.setActiveNodesAndMarks()
@@ -63,10 +81,17 @@ export default class Editor {
       }, 10)
     }
 
-    this.options.onInit({
+    this.events.forEach(name => {
+      this.on(name, this.options[camelCase(`on ${name}`)])
+    })
+
+    this.emit('init', {
       view: this.view,
       state: this.state,
     })
+
+    // give extension manager access to our view
+    this.extensions.view = this.view
   }
 
   setOptions(options) {
@@ -92,11 +117,15 @@ export default class Editor {
     ]
   }
 
+  get state() {
+    return this.view ? this.view.state : null
+  }
+
   createExtensions() {
     return new ExtensionManager([
       ...this.builtInExtensions,
       ...this.options.extensions,
-    ])
+    ], this)
   }
 
   createPlugins() {
@@ -157,7 +186,6 @@ export default class Editor {
         ...this.keymaps,
         keymap({
           Backspace: undoInputRule,
-          Escape: selectParentNode,
         }),
         keymap(baseKeymap),
         dropCursor(this.options.dropCursor),
@@ -182,7 +210,7 @@ export default class Editor {
     })
   }
 
-  createDocument(content) {
+  createDocument(content, parseOptions = this.options.parseOptions) {
     if (content === null) {
       return this.schema.nodeFromJSON(this.options.emptyDocument)
     }
@@ -200,7 +228,7 @@ export default class Editor {
       const element = document.createElement('div')
       element.innerHTML = content.trim()
 
-      return DOMParser.fromSchema(this.schema).parse(element)
+      return DOMParser.fromSchema(this.schema).parse(element, parseOptions)
     }
 
     return false
@@ -208,21 +236,21 @@ export default class Editor {
 
   createView() {
     const view = new EditorView(this.element, {
-      state: this.state,
-      handlePaste: this.options.onPaste,
-      handleDrop: this.options.onDrop,
+      state: this.createState(),
+      handlePaste: (...args) => { this.emit('paste', ...args) },
+      handleDrop: (...args) => { this.emit('drop', ...args) },
       dispatchTransaction: this.dispatchTransaction.bind(this),
     })
 
     view.dom.style.whiteSpace = 'pre-wrap'
 
-    view.dom.addEventListener('focus', event => this.options.onFocus({
+    view.dom.addEventListener('focus', event => this.emit('focus', {
       event,
       state: this.state,
       view: this.view,
     }))
 
-    view.dom.addEventListener('blur', event => this.options.onBlur({
+    view.dom.addEventListener('blur', event => this.emit('blur', {
       event,
       state: this.state,
       view: this.view,
@@ -275,8 +303,8 @@ export default class Editor {
   }
 
   dispatchTransaction(transaction) {
-    this.state = this.state.apply(transaction)
-    this.view.updateState(this.state)
+    const newState = this.state.apply(transaction)
+    this.view.updateState(newState)
     this.setActiveNodesAndMarks()
 
     if (!transaction.docChanged) {
@@ -287,7 +315,7 @@ export default class Editor {
   }
 
   emitUpdate(transaction) {
-    this.options.onUpdate({
+    this.emit('update', {
       getHTML: this.getHTML.bind(this),
       getJSON: this.getJSON.bind(this),
       state: this.state,
@@ -295,12 +323,33 @@ export default class Editor {
     })
   }
 
-  focus() {
+  focus(position = null) {
+    if (position !== null) {
+      let pos = position
+
+      if (position === 'start') {
+        pos = 0
+      } else if (position === 'end') {
+        pos = this.view.state.doc.nodeSize - 2
+      }
+
+      const selection = TextSelection.near(this.view.state.doc.resolve(pos))
+      const transaction = this.view.state.tr.setSelection(selection)
+      this.view.dispatch(transaction)
+    }
+
     this.view.focus()
   }
 
   blur() {
     this.view.dom.blur()
+  }
+
+  getSchemaJSON() {
+    return JSON.parse(JSON.stringify({
+      nodes: this.extensions.nodes,
+      marks: this.extensions.marks,
+    }))
   }
 
   getHTML() {
@@ -318,14 +367,14 @@ export default class Editor {
     return this.state.doc.toJSON()
   }
 
-  setContent(content = {}, emitUpdate = false) {
-    this.state = EditorState.create({
+  setContent(content = {}, emitUpdate = false, parseOptions) {
+    const newState = EditorState.create({
       schema: this.state.schema,
-      doc: this.createDocument(content),
+      doc: this.createDocument(content, parseOptions),
       plugins: this.state.plugins,
     })
 
-    this.view.updateState(this.state)
+    this.view.updateState(newState)
 
     if (emitUpdate) {
       this.emitUpdate()
@@ -380,10 +429,11 @@ export default class Editor {
       return
     }
 
-    this.state = this.state.reconfigure({
+    const newState = this.state.reconfigure({
       plugins: this.state.plugins.concat([plugin]),
     })
-    this.view.updateState(this.state)
+    this.view.updateState(newState)
+    this.view.updatePluginViews()
   }
 
   destroy() {

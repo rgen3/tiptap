@@ -65,6 +65,10 @@ export default class ComponentView {
   }
 
   updateComponentProps(props) {
+    if (!this.vm._props) {
+      return
+    }
+
     // Update props in component
     // TODO: Avoid mutating a prop directly.
     // Maybe there is a better way to do this?
@@ -108,6 +112,10 @@ export default class ComponentView {
 
   // disable (almost) all prosemirror event listener for node views
   stopEvent(event) {
+    if (typeof this.extension.stopEvent === 'function') {
+      return this.extension.stopEvent(event)
+    }
+
     const isPaste = event.type === 'paste'
     const draggable = !!this.extension.schema.draggable
 

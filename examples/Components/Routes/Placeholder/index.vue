@@ -1,5 +1,6 @@
 <template>
   <div class="editor">
+    <input type="text" v-model="editor.extensions.options.placeholder.emptyNodeText">
     <editor-content class="editor__content" :editor="editor" />
   </div>
 </template>
